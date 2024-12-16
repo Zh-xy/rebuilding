@@ -1,0 +1,129 @@
+import pandas as pd
+import numpy as np
+
+
+def process_flood_materials(
+    tabulate_file, materials_file, flood_info_file, output_file
+):
+    """
+    Processes flood material data to compute material estimates by flood polygon categories.
+
+    Parameters:
+        tabulate_file (str): Path to the tabulate intersection relationships file.
+        materials_file (str): Path to the materials file (e.g., NLC materials).
+        flood_info_file (str): Path to the flood polygon information file (with country names and FLOPROS).
+        output_file (str): Path to save the processed material polygons CSV.
+
+    Returns:
+        pd.DataFrame: DataFrame of processed gridded materials.
+    """
+    # Import data
+    tabulate_data = pd.read_csv(tabulate_file)
+    materials_data = pd.read_csv(materials_file)
+    flood_info_data = pd.read_csv(flood_info_file)
+
+    # Clean tabulate intersection relationship table
+    tabulate_data = tabulate_data.drop(["OID_", "AREA"], axis=1)
+
+    # Revise material NLCs
+    materials_data = materials_data.rename(
+        columns={
+            "ID": "id_mat",
+            "NR_Concret": "NR_Concrete",
+            "NR_Aluminu": "NR_Aluminum",
+        }
+    )
+    materials_data = materials_data.drop(
+        [
+            "OID_",
+            "NTL_sum",
+            "NLC_area",
+            "BGFA_60",
+            "Res_Prop",
+            "NonRes_Pro",
+            "ANR",
+            "Vol_mean",
+            "Vol_min",
+            "Vol_max",
+            "MS_density",
+            "Vol_NLC_ar",
+        ],
+        axis=1,
+    )
+
+    # Classify polygons into categories
+    tabulate_data_filtered = tabulate_data.loc[
+        ~(
+            (tabulate_data["pointid_ri"] == 0)
+            & (tabulate_data["pointid_co"] == 0)
+        )
+    ]
+    tabulate_data_filtered.insert(
+        1,
+        "category",
+        np.select(
+            [
+                (tabulate_data_filtered["pointid_ri"] != 0)
+                & (tabulate_data_filtered["pointid_co"] == 0),
+                (tabulate_data_filtered["pointid_ri"] != 0)
+                & (tabulate_data_filtered["pointid_co"] != 0),
+                (tabulate_data_filtered["pointid_ri"] == 0)
+                & (tabulate_data_filtered["pointid_co"] != 0),
+            ],
+            ["c1", "c2", "c3"],
+        ),
+    )
+
+    # Merge material data
+    merged_data = pd.merge(
+        tabulate_data_filtered, materials_data, on="id_mat", how="left"
+    )
+
+    # Calculate gridded material values
+    for material in [
+        "R_Concrete",
+        "R_Steel",
+        "R_Copper",
+        "R_Aluminum",
+        "R_Wood",
+        "R_Glass",
+        "NR_Concrete",
+        "NR_Steel",
+        "NR_Copper",
+        "NR_Aluminum",
+        "NR_Wood",
+        "NR_Glass",
+        "MS_sum",
+    ]:
+        if material in merged_data.columns:
+            merged_data[f"gridded_{material}"] = (
+                merged_data[material] * merged_data["PERCENTAGE"] * 0.01
+            )
+            merged_data = merged_data.drop(columns=[material])
+
+    # Group data by category
+    grouped_data = []
+    for category in ["c1", "c2", "c3"]:
+        category_data = merged_data[merged_data["category"] == category]
+        grouped = category_data.groupby(
+            ["pointid_ri", "pointid_co", "category"], as_index=False
+        ).sum()
+        grouped_data.append(grouped)
+
+    # Combine grouped data
+    combined_data = pd.concat(grouped_data)
+
+    # Add country and protection level
+    flood_info_data_clean = flood_info_data.dropna(subset=["COUNTRY"]).drop(
+        ["OID_"], axis=1
+    )
+    combined_data = pd.merge(
+        combined_data,
+        flood_info_data_clean,
+        on=["pointid_ri", "pointid_co"],
+        how="left",
+    )
+
+    # Save to output file
+    combined_data.to_csv(output_file, index=False)
+    return combined_data
