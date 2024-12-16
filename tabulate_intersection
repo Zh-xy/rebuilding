@@ -1,0 +1,72 @@
+
+import os
+from pathlib import Path
+import arcpy
+
+# Define the root directory dynamically
+ROOT_DIR = Path(__file__).parent if "__file__" in locals() else Path.cwd()
+
+# Define generic paths
+DATA_DIR = ROOT_DIR / "data"  # Directory for input data
+GDB_PATH = ROOT_DIR / "workspace.gdb"  # Geodatabase workspace
+
+# Enable overwriting outputs
+arcpy.env.overwriteOutput = True
+arcpy.env.workspace = str(GDB_PATH)
+
+# Create global fishnet
+arcpy.management.CreateFishnet(
+    out_feature_class=str(GDB_PATH / "Fishnet_global"),
+    origin_coord="-180 -90",
+    y_axis_coord="-180 -80",
+    cell_width=None,
+    cell_height=None,
+    number_rows=21600,
+    number_columns=43200,
+    corner_coord="180 90",
+    labels="NO_LABELS",
+    geometry_type="POLYLINE"
+)
+
+# Create European fishnet
+# Step 1: Buffer the boundary
+arcpy.analysis.Buffer(
+    in_features=str(DATA_DIR / "boundary.shp"),  # Replace with actual boundary file
+    out_feature_class=str(GDB_PATH / "Boundary_Buffer"),
+    buffer_distance_or_field="0.025 DecimalDegrees",
+    line_side="FULL",
+    line_end_type="ROUND",
+    dissolve_option="NONE",
+    method="PLANAR"
+)
+
+# Step 2: Clip the global fishnet to European extent
+arcpy.analysis.Clip(
+    in_features=str(GDB_PATH / "Fishnet_global"),
+    clip_features=str(GDB_PATH / "Boundary_Buffer"),
+    out_feature_class=str(GDB_PATH / "Fishnet_European")
+)
+
+# Convert fishnet to polygon
+arcpy.management.FeatureToPolygon(
+    in_features=str(GDB_PATH / "Fishnet_European"),
+    out_feature_class=str(GDB_PATH / "Fishnet_European_Polygon"),
+    attributes="ATTRIBUTES"
+)
+
+# Tabulate intersection
+# Simplify material data
+arcpy.conversion.ExportFeatures(
+    in_features=str(DATA_DIR / "materials.shp"),  # Replace with actual materials file
+    out_features=str(GDB_PATH / "Materials_Simplified"),
+    field_mapping='id "id" true true false 10 Text 0 0,First,#,materials,id,-1,-1'
+)
+
+# Perform tabulate intersection
+arcpy.analysis.TabulateIntersection(
+    in_zone_features=str(GDB_PATH / "Materials_Simplified"),
+    zone_fields="id",
+    in_class_features=str(GDB_PATH / "Fishnet_European_Polygon"),
+    out_table=str(GDB_PATH / "Tabulate_Intersection"),
+    class_fields="id"
+)
