@@ -1,0 +1,66 @@
+import pandas as pd
+
+# Input configurations
+scenario_table = pd.read_excel("scenario_list.xlsx", sheet_name='list_2080')
+scenario_list = scenario_table['scenario_name']
+flood_type_list = ['river', 'coastal', 'mixed']
+
+# Load base materials and auxiliary data
+materials = pd.read_csv("material_polygons.csv")
+sub_country_data = pd.read_csv("Flood_polygon_RE_sub_country_names.csv")
+protection_levels = pd.read_csv("Flood_river_coastal_polygon_joining_Prot_scenarios.csv")
+
+# Merge materials with sub-country and protection data
+materials = (
+    materials
+    .merge(sub_country_data, on=['pointid_ri', 'pointid_co'], how='left')
+    .merge(protection_levels, on=['pointid_ri', 'pointid_co'], how='left')
+)
+
+# Initialize results
+results = []
+
+# Process scenarios and flood types
+for scenario in scenario_list:
+    for flood_type in flood_type_list:
+        # Load flood depth data based on scenario and flood type
+        if flood_type == 'river':
+            depth_data = pd.read_csv(f"Flood_depth_tables/{scenario}_river.csv")
+        elif flood_type == 'coastal':
+            depth_data = pd.read_csv(f"Flood_depth_tables/{scenario}_coastal.csv")
+        else:  # mixed
+            river_data = pd.read_csv(f"Flood_depth_tables/{scenario}_river.csv")
+            coastal_data = pd.read_csv(f"Flood_depth_tables/{scenario}_coastal.csv")
+            depth_data = pd.merge(river_data, coastal_data, on=['pointid_ri', 'pointid_co'], how='outer')
+
+        # Merge depth data with materials
+        full_data = pd.merge(materials, depth_data, how='left')
+
+        # Filter for relevant rows (e.g., where flood depth > 0 and protection is insufficient)
+        if flood_type == 'river':
+            filtered = full_data[(full_data['d_0100'] > 0) & (full_data['r_flopros'] < 100)]
+        elif flood_type == 'coastal':
+            filtered = full_data[(full_data['d_0100'] > 0) & (full_data['c_flopros'] < 100)]
+        else:
+            filtered = full_data[(full_data['d_0100'] > 0) & 
+                                 ((full_data['r_flopros'] < 100) | (full_data['c_flopros'] < 100))]
+
+        # Summarize material exposure by country and region
+        summary = (
+            filtered
+            .groupby(['COUNTRY', 'NAME_1'], as_index=False)
+            .agg({'gridded_R_Concrete': 'sum', 'gridded_R_Steel': 'sum'})
+        )
+
+        # Add flood type and scenario info
+        summary['flood_type'] = flood_type
+        summary['scenario'] = scenario
+
+        # Append to results
+        results.append(summary)
+
+# Combine all results
+final_results = pd.concat(results, ignore_index=True)
+
+# Save output
+final_results.to_csv("material_exposure_summary.csv", index=False)
