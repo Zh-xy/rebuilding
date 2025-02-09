@@ -1,0 +1,73 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import time
+
+# Start timing
+start_time = time.time()
+
+# Load scenario configurations
+scenario_table = pd.read_excel("scenario_list.xlsx", sheet_name="Tabelle1")
+scenario_list = ["historical"]  # Example scenario
+flood_type_list = ["river"]  # Example flood type
+
+# Load input data
+materials = pd.read_csv("material_polygons.csv")
+country_data = pd.read_csv("Flood_polygon_RE_country_names.csv")
+protection_levels = pd.read_csv("Flood_river_coastal_polygon_joining_Prot_scenarios.csv")
+
+# Merge input datasets
+materials = (
+    materials
+    .merge(country_data, on=["pointid_ri", "pointid_co"], how="left")
+    .merge(protection_levels, on=["pointid_ri", "pointid_co"], how="left")
+)
+
+# Initialize results container
+results = []
+
+# Process scenarios and flood types
+for scenario in scenario_list:
+    for flood_type in flood_type_list:
+        print(f"Processing {scenario} - {flood_type}")
+
+        # Load flood depth data
+        file_name = scenario_table.loc[
+            scenario_table["scenario_name"] == scenario, f"{flood_type}_file_name"
+        ].iloc[0]
+        depth_data = pd.read_csv(f"Flood_depth_tables/{file_name}.csv").rename(
+            columns={"pointid": f"pointid_{flood_type[:2]}"}
+        )
+
+        # Merge flood depths with materials
+        full_data = materials.merge(depth_data, how="left")
+
+        # Compute exposure (materials in flooded areas)
+        filtered_data = full_data[full_data["d_0100"] > 0]
+        grouped_exposure = filtered_data.groupby("COUNTRY").sum(numeric_only=True).reset_index()
+
+        # Compute expected annual damage (EAD) using predefined damage functions
+        def damage_function(x):
+            return 1 if x > 6 else 0.75 if x > 3 else 0.4 if x > 1 else 0
+
+        damage_func = np.vectorize(damage_function)
+
+        for material in ["Concrete", "Steel", "Wood"]:
+            full_data[f"EAD_{material}"] = (
+                full_data[f"gridded_R_{material}"] * damage_func(full_data["d_0100"])
+            )
+
+        grouped_EAD = full_data.groupby("COUNTRY")[["EAD_Concrete", "EAD_Steel", "EAD_Wood"]].sum().reset_index()
+
+        # Append results
+        grouped_exposure["type"] = "exposure"
+        grouped_EAD["type"] = "EAD"
+
+        results.extend([grouped_exposure, grouped_EAD])
+
+# Combine results and export
+final_results = pd.concat(results)
+final_results.to_csv(f"Material_country_{datetime.now().strftime('%Y-%m-%d')}.csv", index=False)
+
+# End timing
+print(f"Total time taken: {str(timedelta(seconds=time.time() - start_time))}")
